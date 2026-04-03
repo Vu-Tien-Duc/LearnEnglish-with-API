@@ -1,0 +1,243 @@
+from flask import Blueprint, jsonify, request
+from db import get_db_connection
+
+admin_learning_progress_bp = Blueprint("admin_learning_progress", __name__)
+
+
+# =========================
+# GET OVERVIEW STATS
+# GET /api/admin/learnprogress/overview
+# =========================
+@admin_learning_progress_bp.route("/overview", methods=["GET"])
+def get_overview():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT
+                COUNT(DISTINCT lp.UserID)                                        AS TotalLearners,
+                SUM(CASE WHEN lp.Status = 'New'      THEN 1 ELSE 0 END)         AS TotalNew,
+                SUM(CASE WHEN lp.Status = 'Learning' THEN 1 ELSE 0 END)         AS TotalLearning,
+                SUM(CASE WHEN lp.Status = 'Mastered' THEN 1 ELSE 0 END)         AS TotalMastered,
+                CAST(
+                    SUM(CASE WHEN lp.Status = 'Mastered' THEN 1 ELSE 0 END)
+                    * 100.0
+                    / NULLIF(COUNT(lp.ProgressID), 0)
+                AS INT)                                                           AS MasteredPercent
+            FROM LearningProgress lp
+        """)
+
+        columns = [col[0] for col in cursor.description]
+        row = cursor.fetchone()
+        result = dict(zip(columns, row)) if row else {}
+
+        conn.close()
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# =========================
+# GET ALL USERS + PROGRESS
+# GET /api/admin/learnprogress/
+# =========================
+@admin_learning_progress_bp.route("/", methods=["GET"])
+def get_all_progress():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT
+                u.UserID,
+                u.Username,
+                u.Email,
+                COUNT(lp.WordID)                                                     AS TotalWords,
+                SUM(CASE WHEN lp.Status = 'New'      THEN 1 ELSE 0 END)             AS NewCount,
+                SUM(CASE WHEN lp.Status = 'Learning' THEN 1 ELSE 0 END)             AS LearningCount,
+                SUM(CASE WHEN lp.Status = 'Mastered' THEN 1 ELSE 0 END)             AS MasteredCount,
+                CAST(
+                    SUM(CASE WHEN lp.Status = 'Mastered' THEN 1 ELSE 0 END)
+                    * 100.0
+                    / NULLIF((SELECT COUNT(*) FROM Vocabulary), 0)
+                AS INT)                                                               AS ProgressPercent,
+                (
+                    SELECT AVG(CAST(best.BestScore AS FLOAT))
+                    FROM (
+                        SELECT WordID, MAX(Score) AS BestScore
+                        FROM UserLearning
+                        WHERE UserID = u.UserID AND Score IS NOT NULL
+                        GROUP BY WordID
+                    ) AS best
+                )                                                                     AS AvgQuizScore,
+                MAX(lp.LastReviewed)                                                  AS LastReviewed
+            FROM Users u
+            LEFT JOIN LearningProgress lp ON u.UserID = lp.UserID
+            GROUP BY u.UserID, u.Username, u.Email
+            ORDER BY MasteredCount DESC
+        """)
+
+        columns = [col[0] for col in cursor.description]
+        results = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+        conn.close()
+        return jsonify(results)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# =========================
+# GET DETAIL 1 USER
+# GET /api/admin/learnprogress/<user_id>
+# =========================
+@admin_learning_progress_bp.route("/<int:user_id>", methods=["GET"])
+def get_user_progress(user_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # --- Tổng quan user ---
+        cursor.execute("""
+            SELECT
+                u.UserID, u.Username, u.Email,
+                COUNT(lp.WordID)                                                      AS TotalWords,
+                SUM(CASE WHEN lp.Status = 'New'      THEN 1 ELSE 0 END)              AS NewCount,
+                SUM(CASE WHEN lp.Status = 'Learning' THEN 1 ELSE 0 END)              AS LearningCount,
+                SUM(CASE WHEN lp.Status = 'Mastered' THEN 1 ELSE 0 END)              AS MasteredCount,
+                CAST(
+                    SUM(CASE WHEN lp.Status = 'Mastered' THEN 1 ELSE 0 END)
+                    * 100.0
+                    / NULLIF((SELECT COUNT(*) FROM Vocabulary), 0)
+                AS INT)                                                                AS ProgressPercent,
+                MAX(lp.LastReviewed)                                                   AS LastReviewed
+            FROM Users u
+            LEFT JOIN LearningProgress lp ON u.UserID = lp.UserID
+            WHERE u.UserID = ?
+            GROUP BY u.UserID, u.Username, u.Email
+        """, (user_id,))
+
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"message": "User not found"}), 404
+
+        columns = [col[0] for col in cursor.description]
+        user_summary = dict(zip(columns, row))
+
+        # --- Tiến độ theo Category ---
+        cursor.execute("""
+            SELECT
+                c.CategoryID,
+                c.CategoryName,
+                COUNT(v.WordID)                                                        AS TotalInCategory,
+                SUM(CASE WHEN lp.Status = 'Mastered' THEN 1 ELSE 0 END)               AS MasteredInCategory,
+                CAST(
+                    SUM(CASE WHEN lp.Status = 'Mastered' THEN 1 ELSE 0 END)
+                    * 100.0
+                    / NULLIF(COUNT(v.WordID), 0)
+                AS INT)                                                                 AS CategoryPercent
+            FROM Categories c
+            LEFT JOIN Vocabulary v        ON c.CategoryID = v.CategoryID
+            LEFT JOIN LearningProgress lp ON v.WordID = lp.WordID AND lp.UserID = ?
+            GROUP BY c.CategoryID, c.CategoryName
+            ORDER BY CategoryPercent DESC
+        """, (user_id,))
+
+        cols = [col[0] for col in cursor.description]
+        category_progress = [dict(zip(cols, r)) for r in cursor.fetchall()]
+
+        # --- Lịch sử Quiz 10 gần nhất (best score mỗi lần học) ---
+        cursor.execute("""
+            SELECT TOP 10
+                v.Word,
+                ul.Score,
+                ul.LearnDate
+            FROM UserLearning ul
+            JOIN Vocabulary v ON ul.WordID = v.WordID
+            WHERE ul.UserID = ?
+            ORDER BY ul.LearnDate DESC
+        """, (user_id,))
+
+        cols = [col[0] for col in cursor.description]
+        quiz_history = [dict(zip(cols, r)) for r in cursor.fetchall()]
+
+        conn.close()
+        return jsonify({
+            "user": user_summary,
+            "categoryProgress": category_progress,
+            "quizHistory": quiz_history
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# =========================
+# UPDATE STATUS
+# PUT /api/admin/learnprogress/<user_id>/<word_id>
+# body: { "status": "New" | "Learning" | "Mastered" }
+# =========================
+@admin_learning_progress_bp.route("/<int:user_id>/<int:word_id>", methods=["PUT"])
+def update_progress(user_id, word_id):
+    try:
+        data = request.json
+        new_status = data.get("status", "")
+
+        allowed = ["New", "Learning", "Mastered"]
+        if new_status not in allowed:
+            return jsonify({"error": f"Status phải là một trong: {allowed}"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT ProgressID FROM LearningProgress
+            WHERE UserID = ? AND WordID = ?
+        """, (user_id, word_id))
+
+        existing = cursor.fetchone()
+
+        if existing:
+            cursor.execute("""
+                UPDATE LearningProgress
+                SET Status = ?, LastReviewed = GETDATE()
+                WHERE UserID = ? AND WordID = ?
+            """, (new_status, user_id, word_id))
+        else:
+            cursor.execute("""
+                INSERT INTO LearningProgress (UserID, WordID, Status, LastReviewed)
+                VALUES (?, ?, ?, GETDATE())
+            """, (user_id, word_id, new_status))
+
+        conn.commit()
+        conn.close()
+        return jsonify({"message": "Cập nhật thành công"})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# =========================
+# DELETE PROGRESS RECORD
+# DELETE /api/admin/learnprogress/<user_id>/<word_id>
+# =========================
+@admin_learning_progress_bp.route("/<int:user_id>/<int:word_id>", methods=["DELETE"])
+def delete_progress(user_id, word_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            DELETE FROM LearningProgress
+            WHERE UserID = ? AND WordID = ?
+        """, (user_id, word_id))
+
+        conn.commit()
+        conn.close()
+        return jsonify({"message": "Đã xóa bản ghi tiến độ"})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500

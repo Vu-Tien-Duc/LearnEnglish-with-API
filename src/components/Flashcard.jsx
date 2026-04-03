@@ -1,0 +1,152 @@
+import { useState, useEffect } from 'react';
+import { Volume2, Heart, RefreshCw, CheckCircle, XCircle } from 'lucide-react';
+
+const Flashcard = ({ wordInfo, onUpdateProgress, onToggleFavorite }) => {
+    const [isFlipped, setIsFlipped] = useState(false);
+    const [isFavorite, setIsFavorite] = useState(false);
+
+    useEffect(() => {
+        // Reset lại trạng thái lật thẻ khi chuyển sang từ mới
+        setIsFlipped(false);
+        // Lưu ý: Đảm bảo key IsFavorite hoặc isFavorite khớp với dữ liệu API trả về
+        setIsFavorite(wordInfo.IsFavorite || wordInfo.isFavorite || false); 
+    }, [wordInfo]);
+
+    const handleFlip = () => {
+        setIsFlipped(!isFlipped);
+    };
+
+    const playAudio = (e) => {
+        e.stopPropagation(); 
+        window.speechSynthesis.cancel(); 
+
+        const speakWithAI = () => {
+            // Hỗ trợ cả key Word (viết hoa) và word (viết thường)
+            const textToSpeak = wordInfo.Word || wordInfo.word;
+            if (textToSpeak) {
+                const utterance = new SpeechSynthesisUtterance(textToSpeak);
+                utterance.lang = 'en-US'; 
+                utterance.rate = 0.9; 
+                window.speechSynthesis.speak(utterance);
+            }
+        };
+
+        const audioUrl = wordInfo.AudioURL || wordInfo.audioUrl;
+
+        if (audioUrl && audioUrl.startsWith('http')) {
+            const audio = new Audio(audioUrl);
+            audio.play().catch((error) => {
+                console.warn("⚠️ Link mp3 bị chặn hoặc lỗi. Đang tự động chuyển sang giọng AI...", error);
+                speakWithAI(); 
+            });
+        } 
+        else {
+            speakWithAI();
+        }
+    };
+
+    const handleFavorite = (e) => {
+        e.stopPropagation();
+        const nextState = !isFavorite;
+        setIsFavorite(nextState);
+        // Hỗ trợ cả WordID và wordId
+        if (onToggleFavorite) onToggleFavorite(wordInfo.WordID || wordInfo.wordId);
+    };
+
+    return (
+        <div style={fcStyles.wrapper}>
+            {/* Thẻ 3D */}
+            <div style={fcStyles.cardContainer} onClick={handleFlip}>
+                <div style={{ ...fcStyles.cardInner, transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0)' }}>
+                    
+                    {/* MẶT TRƯỚC: Từ vựng & Phát âm */}
+                    <div style={{...fcStyles.cardFace, ...fcStyles.front}}>
+                        <button onClick={handleFavorite} style={fcStyles.heartBtn}>
+                            <Heart 
+                                size={28} 
+                                fill={isFavorite ? "#ef4444" : "none"} 
+                                color={isFavorite ? "#ef4444" : "#d1d5db"} 
+                            />
+                        </button>
+                        
+                        <h2 style={fcStyles.wordText}>{wordInfo.Word || wordInfo.word}</h2>
+                        <p style={fcStyles.ipaText}>/{wordInfo.IPA || wordInfo.ipa || 'IPA'}/</p>
+                        
+                        <button onClick={playAudio} style={fcStyles.audioBtn}>
+                            <Volume2 size={28} />
+                        </button>
+                        <p style={fcStyles.flipHint}>
+                            <RefreshCw size={14} /> Chạm để lật xem nghĩa
+                        </p>
+                    </div>
+
+                    {/* MẶT SAU: Nghĩa, Hình ảnh & Câu ví dụ */}
+                    <div style={{...fcStyles.cardFace, ...fcStyles.back}}>
+                        {(wordInfo.ImageURL || wordInfo.imageUrl) && (
+                            <img 
+                                src={wordInfo.ImageURL || wordInfo.imageUrl} 
+                                alt={wordInfo.Word || wordInfo.word} 
+                                style={fcStyles.image} 
+                                onError={(e) => { e.target.style.display = 'none'; }}
+                            />
+                        )}
+                        
+                        <h3 style={fcStyles.meaningText}>{wordInfo.Meaning || wordInfo.meaning}</h3>
+                        
+                        {/* HIỂN THỊ CÂU VÍ DỤ TỪ DATABASE */}
+                        <div style={fcStyles.exampleBox}>
+                            <p style={fcStyles.exampleText}>
+                                "{wordInfo.Example || wordInfo.example || "Keep going, you're doing great!"}"
+                            </p>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+
+            {/* Nút hành động (Chỉ hiện khi thẻ đã lật) */}
+            <div style={{
+                ...fcStyles.actionGroup, 
+                opacity: isFlipped ? 1 : 0, 
+                transform: isFlipped ? 'translateY(0)' : 'translateY(16px)',
+                pointerEvents: isFlipped ? 'auto' : 'none'
+            }}>
+                <button onClick={() => onUpdateProgress(wordInfo.WordID || wordInfo.wordId, 'Learning')} style={fcStyles.btnFail}>
+                    <XCircle size={20} /> Chưa thuộc
+                </button>
+                <button onClick={() => onUpdateProgress(wordInfo.WordID || wordInfo.wordId, 'Mastered')} style={fcStyles.btnPass}>
+                    <CheckCircle size={20} /> Đã thuộc
+                </button>
+            </div>
+        </div>
+    );
+};
+
+const fcStyles = {
+    wrapper: { display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%', maxWidth: '384px', margin: '0 auto' },
+    cardContainer: { width: '100%', height: '380px', cursor: 'pointer', perspective: '1000px' }, // Tăng chiều cao lên 380px để chứa đủ câu ví dụ dài
+    cardInner: { position: 'relative', width: '100%', height: '100%', transition: 'transform 0.6s cubic-bezier(0.4, 0.2, 0.2, 1)', transformStyle: 'preserve-3d' },
+    cardFace: { position: 'absolute', width: '100%', height: '100%', backfaceVisibility: 'hidden', borderRadius: '24px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: '24px', boxSizing: 'border-box', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' },
+    
+    front: { backgroundColor: '#ffffff', border: '2px solid #bfdbfe' },
+    back: { backgroundImage: 'linear-gradient(to bottom right, #eff6ff, #dbeafe)', border: '2px solid #93c5fd', transform: 'rotateY(180deg)' },
+    
+    heartBtn: { position: 'absolute', top: '16px', right: '16px', background: 'none', border: 'none', cursor: 'pointer', transition: '0.2s' },
+    wordText: { fontSize: '40px', fontWeight: 900, color: '#1f2937', margin: '0 0 8px', textAlign: 'center' },
+    ipaText: { fontSize: '18px', color: '#9ca3af', fontStyle: 'italic', fontWeight: 500, margin: '0 0 24px' },
+    audioBtn: { padding: '16px', backgroundColor: '#eff6ff', borderRadius: '50%', color: '#2563eb', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' },
+    flipHint: { marginTop: '32px', fontSize: '12px', color: '#9ca3af', display: 'flex', alignItems: 'center', gap: '6px' },
+    
+    image: { width: '112px', height: '112px', objectFit: 'cover', borderRadius: '16px', marginBottom: '16px', border: '3px solid #fff', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' },
+    meaningText: { fontSize: '28px', fontWeight: 'bold', color: '#1e40af', margin: '0 0 16px', textAlign: 'center' },
+    
+    // Thêm box bọc quanh câu ví dụ để nhìn gọn gàng hơn
+    exampleBox: { backgroundColor: 'rgba(255, 255, 255, 0.6)', padding: '12px', borderRadius: '12px', width: '100%', boxSizing: 'border-box' },
+    exampleText: { textAlign: 'center', color: '#374151', fontSize: '15px', fontStyle: 'italic', margin: 0, lineHeight: '1.5' },
+    
+    actionGroup: { display: 'flex', gap: '16px', marginTop: '32px', width: '100%', transition: 'all 0.5s ease' },
+    btnFail: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '14px', backgroundColor: '#fff', color: '#ea580c', fontWeight: 'bold', borderRadius: '12px', border: '2px solid #ffedd5', cursor: 'pointer', fontSize: '16px' },
+    btnPass: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '14px', backgroundColor: '#16a34a', color: '#fff', fontWeight: 'bold', borderRadius: '12px', border: 'none', cursor: 'pointer', fontSize: '16px', boxShadow: '0 4px 6px rgba(22, 163, 74, 0.2)' }
+};
+
+export default Flashcard;
