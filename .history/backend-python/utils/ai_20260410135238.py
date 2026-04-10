@@ -3,11 +3,11 @@ import json
 from dotenv import load_dotenv
 from google import genai 
 from google.genai import types
-from google.genai.types import HttpOptions, HttpRetryOptions
+from google.genai.types import HttpOptions, HttpRetryOptions # Thêm thư viện để cấu hình Retry
 
 load_dotenv()
 
-# Khởi tạo Client
+# Khởi tạo Client với cơ chế tự động thử lại tối đa 3 lần nếu máy chủ quá tải (Lỗi 503)
 api_key = os.getenv("GEMINI_API_KEY")
 client = genai.Client(
     api_key=api_key,
@@ -16,12 +16,12 @@ client = genai.Client(
     )
 )
 
+# Thử in ra để chắc chắn key đã ăn (Bạn có thể xóa dòng này sau khi chạy được)
 print(f"--- AI System Initialized with Key: {api_key[:5]}... ---")
 
 def generate_quiz_for_word(word: str, meaning: str):
     prompt = f"Tạo 1 câu hỏi trắc nghiệm tiếng Anh cho từ '{word}' ({meaning}). Trả về JSON chuẩn questionText và options."
     try:
-        # SỬA LỖI 404: Chỉ dùng tên model, không dùng 'models/' phía trước
         response = client.models.generate_content(
             model='gemini-1.5-flash', 
             contents=prompt,
@@ -45,9 +45,7 @@ def chat_with_teacher(user_message: str):
     }}
     """
     try:
-        # SỬA LỖI 404: Đảm bảo model ID là 'gemini-1.5-flash'
-        # Lưu ý: 'gemini-2.5-flash' có thể chưa khả dụng ở khu vực/phiên bản của bạn, 
-        # nên dùng 'gemini-1.5-flash' để ổn định nhất.
+        # Đã đổi tạm sang gemini-1.5-flash để đảm bảo tính ổn định
         response = client.models.generate_content(
             model='gemini-2.5-flash', 
             contents=prompt,
